@@ -170,9 +170,11 @@ async def async_request_openai_completions(
             # "ignore_eos": not args.disable_ignore_eos,
             **request_func_input.extra_request_body,
         }
-        #print(f'{payload=}')
-        headers = {"Authorization": f"Bearer {os.environ.get('OPENAI_API_KEY')}"}
-        # headers = {}
+        # print(f"{payload=}")
+        headers = {}
+        api_key = os.environ.get("OPENAI_API_KEY")
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
         output = RequestFuncOutput()
         output.prompt_len = request_func_input.prompt_len
 
@@ -215,8 +217,8 @@ async def async_request_openai_completions(
                                 most_recent_timestamp = timestamp
                                 generated_text += data["choices"][0]["text"]
 
-                            if 'delta' in data["choices"][0]:
-                                data["choices"][0]["delta"]['content']='การ'
+                            delta = data["choices"][0].get("delta")
+                            if delta and delta.get("content"):
                                 timestamp = time.perf_counter()
                                 # First token
                                 if ttft == 0.0:
@@ -228,7 +230,7 @@ async def async_request_openai_completions(
                                     output.itl.append(timestamp - most_recent_timestamp)
 
                                 most_recent_timestamp = timestamp
-                                generated_text += data["choices"][0]["delta"]['content']
+                                generated_text += delta["content"]
 
                     output.generated_text = generated_text
                     output.success = True
@@ -892,6 +894,38 @@ def calculate_metrics(
             "on the benchmark arguments.",
             stacklevel=2,
         )
+        # Return a metrics object with zeros to avoid crashing on percentiles.
+        metrics = BenchmarkMetrics(
+            completed=0,
+            total_input=0,
+            total_output=0,
+            total_output_retokenized=0,
+            request_throughput=0.0,
+            input_throughput=0.0,
+            output_throughput=0.0,
+            output_throughput_retokenized=0.0,
+            total_throughput=0.0,
+            total_throughput_retokenized=0.0,
+            mean_ttft_ms=0.0,
+            median_ttft_ms=0.0,
+            std_ttft_ms=0.0,
+            p99_ttft_ms=0.0,
+            mean_tpot_ms=0.0,
+            median_tpot_ms=0.0,
+            std_tpot_ms=0.0,
+            p99_tpot_ms=0.0,
+            mean_itl_ms=0.0,
+            median_itl_ms=0.0,
+            std_itl_ms=0.0,
+            p99_itl_ms=0.0,
+            mean_e2e_latency_ms=0.0,
+            median_e2e_latency_ms=0.0,
+            std_e2e_latency_ms=0.0,
+            p99_e2e_latency_ms=0.0,
+            concurrency=0.0,
+        )
+        return metrics, output_lens
+
     metrics = BenchmarkMetrics(
         completed=completed,
         total_input=total_input,
@@ -985,11 +1019,19 @@ async def benchmark(
             print(f"Cannot reach API URL {api_url}: {api_error}")
         
         test_prompt, test_prompt_len, test_output_len = input_requests[0]
+        # Warmup with a small prompt to validate connectivity without stressing
+        # the server (large prompts can trigger long-prefill limits and make
+        # failures look like "bad args").
+        warmup_prompt = test_prompt
+        warmup_prompt_len = test_prompt_len
+        if len(test_prompt) > 4096:
+            warmup_prompt = test_prompt[:4096]
+            warmup_prompt_len = min(test_prompt_len, 4096)
         test_input = RequestFuncInput(
             model=model_id,
-            prompt=test_prompt,
+            prompt=warmup_prompt,
             api_url=api_url,
-            prompt_len=test_prompt_len,
+            prompt_len=warmup_prompt_len,
             output_len=min(test_output_len, 32),
             lora_name=lora_name,
             extra_request_body=extra_request_body,
@@ -1050,6 +1092,16 @@ async def benchmark(
             )
         )
     outputs: List[RequestFuncOutput] = await asyncio.gather(*tasks)
+
+    # If everything failed, print a small sample of errors early (before metrics)
+    # so the caller can see the real server-side/client-side failure reason.
+    if outputs and all(not o.success for o in outputs):
+        errors = [o.error for o in outputs if o.error]
+        if errors:
+            print("\n=== SAMPLE ERRORS (first 5) ===")
+            for i, err in enumerate(errors[:5]):
+                print(f"[{i}] {err[:800]}")
+            print("=== END SAMPLE ERRORS ===\n")
 
     # Stop profiler
     if profile:
@@ -1231,9 +1283,9 @@ def run_benchmark(args_: argparse.Namespace):
 
     # For OpenAI-compatible endpoints (vllm/lmdeploy/sglang-oai), the request payload
     # needs a "model" string which can be unrelated to the local checkpoint path.
-    # Use --model-name to override it while keeping --model for local tokenizer/config.
-    if getattr(args, "model_name", None):
-        args.model = args.model_name
+    # Keep args.model as the local path (for tokenizer/config), and if --model-name
+    # is provided use it only for the request payload.
+    request_model_id = args.model_name if getattr(args, "model_name", None) else args.model
 
     # Set default value for max_concurrency if not present
     if not hasattr(args, "max_concurrency"):
@@ -1334,7 +1386,7 @@ def run_benchmark(args_: argparse.Namespace):
 
     # Read dataset
     backend = args.backend
-    model_id = args.model
+    model_id = request_model_id
     tokenizer_id = args.tokenizer if args.tokenizer is not None else args.model
 
     tokenizer = get_tokenizer(tokenizer_id)

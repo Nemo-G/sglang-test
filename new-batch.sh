@@ -39,6 +39,9 @@ log_success() {
 MODEL_NAME="${MODEL_NAME:-GLM-4.6-FP8}"  # 可通过环境变量覆盖
 MODEL_PATH="${MODEL_PATH:-}"             # 建议显式传入，不要在脚本里拼接
 
+# Backend 配置
+BACKEND="${BACKEND:-vllm}"               # 推理引擎: vllm, sglang, lmdeploy 等
+
 # Serving endpoint
 BASE_URL="${BASE_URL:-}"                 # e.g. http://10.0.0.174:8000
 HOST="${HOST:-10.0.0.174}"
@@ -101,6 +104,7 @@ show_usage() {
     echo "选项:"
     echo "  -M, --model-path MODEL_PATH  指定本地模型目录(必须)"
     echo "  -m, --model-name MODEL_NAME  指定请求 payload 里的 model id (默认: GLM-4.6-FP8)"
+    echo "  -b, --backend BACKEND        指定推理引擎 (默认: vllm, 可选: sglang, lmdeploy 等)"
     echo "  -u, --base-url BASE_URL      直接指定服务 base url (例如 http://10.0.0.174:8000)"
     echo "      --host HOST              指定 host (默认: 10.0.0.174)"
     echo "      --port PORT              指定 port (默认: 8000)"
@@ -109,7 +113,8 @@ show_usage() {
     echo "  -h, --help                   显示此帮助信息"
     echo ""
     echo "示例:"
-    echo "  MODEL_PATH=/data00/GLM-4.6-FP8 $0            # 执行所有测试"
+    echo "  MODEL_PATH=/data00/GLM-4.6-FP8 $0            # 执行所有测试 (默认 vllm)"
+    echo "  $0 -M /data00/GLM-4.6-FP8 -b sglang          # 使用 sglang backend"
     echo "  $0 -M /data00/GLM-4.6-FP8 -p                 # 仅高优先级测试"
     echo "  $0 -M /data00/AnyModelDir -m CustomModelName # model name 与 path 解耦"
     echo "  $0 -M /data00/GLM-4.6-FP8 --max-input-only   # 仅测试最大输入组合"
@@ -126,6 +131,10 @@ parse_arguments() {
                 ;;
             -m|--model-name)
                 MODEL_NAME="$2"
+                shift 2
+                ;;
+            -b|--backend)
+                BACKEND="$2"
                 shift 2
                 ;;
             -u|--base-url)
@@ -223,7 +232,7 @@ run_single_test() {
     fi
 
     local cmd="uv run python ${BENCH_SCRIPT} \
-        --backend vllm \
+        --backend ${BACKEND} \
         --dataset-name random \
         --model ${MODEL_PATH} \
         --model-name ${MODEL_NAME} \
@@ -405,6 +414,7 @@ main() {
     echo "大语言模型性能基准测试脚本 (修正版)"
     echo "测试模型: ${MODEL_NAME}"
     echo "模型路径: ${MODEL_PATH}"
+    echo "Backend: ${BACKEND}"
     if [ "$MAX_INPUT_ONLY" = "true" ]; then
         echo "测试模式: 最大输入组合测试"
     elif [ "$HIGH_PRIORITY_ONLY" = "true" ]; then
