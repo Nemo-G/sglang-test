@@ -53,6 +53,9 @@ uv sync
 
 # Or using pip
 pip install -r requirements.txt
+
+# Get and extract ShareGPT_V3_unfiltered_cleaned_split.json from taz.gz
+wget https://metacity-int-web-1314001756.cos.ap-shanghai.myqcloud.com/v1/download/sglang-testing.tar.gz
 ```
 
 ## Running Benchmarks
